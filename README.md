@@ -41,6 +41,9 @@ python agent.py
 | `run_shell` | Run a diagnostic command (kubectl, curl, dig, journalctl, df, ...). |
 | `read_file` | Read a slice of a log / config / manifest. |
 | `http_check` | GET a URL, returning status code, latency, and a body snippet. |
+| `search_incidents` | Recall similar past incidents from memory (see Incident memory). |
+| `save_incident` | Store a resolved incident for future recall. |
+| `load_skill` | Load a best-practice playbook on demand (see Skills). |
 
 ## Safety
 

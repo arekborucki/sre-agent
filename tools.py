@@ -23,6 +23,7 @@ import urllib.request
 import urllib.error
 from time import perf_counter
 
+import skills
 import store
 
 MAX_OUTPUT_CHARS = 16000
@@ -177,6 +178,11 @@ def http_check(url: str, timeout: int = 10) -> str:
         return f"ERROR after {ms:.0f}ms: {type(e).__name__}: {e}"
 
 
+def load_skill(name: str) -> str:
+    """Return the full text of a best-practice playbook (skill) by name."""
+    return skills.get_skill(name)
+
+
 def search_incidents(symptom: str, top_k: int = 5) -> str:
     """Recall resolved past incidents resembling `symptom` (hybrid search)."""
     try:
@@ -264,6 +270,24 @@ TOOLS_SPEC = [
     {
         "type": "function",
         "function": {
+            "name": "load_skill",
+            "description": (
+                "Load the full text of a best-practice playbook (skill) by name. Call this "
+                "when a skill listed in the system prompt is relevant to the current problem, "
+                "e.g. load the 'kubectl' skill before debugging a Kubernetes issue."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Skill name exactly as listed in the available skills."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_incidents",
             "description": (
                 "Recall resolved PAST incidents similar to the current symptom, from "
@@ -326,6 +350,7 @@ TOOL_IMPLS = {
     "http_check": http_check,
     "search_incidents": search_incidents,
     "save_incident": save_incident,
+    "load_skill": load_skill,
 }
 
 # Tools that mutate the system / run arbitrary commands need user approval.

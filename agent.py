@@ -23,6 +23,7 @@ import sys
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from skills import skills_catalog
 from tools import TOOLS_SPEC, TOOL_IMPLS, NEEDS_APPROVAL, is_auto_safe
 
 load_dotenv()
@@ -159,7 +160,9 @@ def main() -> None:
     model = os.getenv("MODEL_ID", "moonshotai/Kimi-K2-Instruct")
     client = OpenAI(base_url=HF_ROUTER_BASE_URL, api_key=token)
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Append the skills catalog (names + descriptions only) to the system prompt.
+    # The model loads a skill's full body on demand via the load_skill tool.
+    messages = [{"role": "system", "content": SYSTEM_PROMPT + skills_catalog()}]
     one_shot = " ".join(sys.argv[1:]).strip()
 
     if one_shot:
