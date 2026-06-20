@@ -5,9 +5,9 @@ OpenAI-compatible HF router) and a small set of diagnostic tools. The model
 investigates an incident by running read-only commands, reasoning over the
 output, and proposing a root cause + fix.
 
-It's the same loop moon-bot uses, stripped to the essentials: **send prompt +
-tools → model asks for a tool → run it → feed the result back → repeat until
-the model answers in plain text.**
+The loop is deliberately minimal: **send prompt + tools → model asks for a tool
+→ run it → feed the result back → repeat until the model answers in plain
+text.**
 
 ## Setup
 
