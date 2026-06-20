@@ -40,49 +40,102 @@ python agent.py
 |---|---|
 | `run_shell` | Run a diagnostic command (kubectl, curl, dig, journalctl, df, ...). |
 | `read_file` | Read a slice of a log / config / manifest. |
-| `http_check` | GET a URL → status code, latency, body snippet. |
+| `http_check` | GET a URL, returning status code, latency, and a body snippet. |
 
 ## Safety
 
-The real safety boundary is the **approval prompt**, not a denylist — you
-can't reliably block destructive shell commands with pattern matching
-(`kubectl scale --replicas=0`, `sed -i`, `find -delete`, `bash -c '…'`,
-`$(…)`, env indirection — all slip past regex). So the model is built around
-*what auto-runs*, not *what's forbidden*:
+The real safety boundary is the **approval prompt**, not a denylist. You
+can't reliably block destructive shell commands with pattern matching.
+Things like `kubectl scale --replicas=0`, `sed -i`, `find -delete`,
+`bash -c '…'`, `$(…)`, and env indirection all slip past regex. So the model
+is built around *what auto-runs*, not *what's forbidden*:
 
 - **Interactive (default):** `run_shell` asks before **every** command.
-- **`AUTO_APPROVE=true`:** auto-runs **only vetted read-only commands** — a
-  *single* command (no pipes, redirection, `;`/`&&`, `$(…)`) whose binary is on
-  a read-only allowlist (`kubectl get/describe/logs/top`, `curl`, `dig`,
-  `journalctl`, `df`, `ps`, …; `kubectl`/`systemctl` are checked for mutating
-  verbs). **Anything else still prompts** — so in a non-interactive run it is
-  *declined*, not executed. Auto-approve does **not** mean "run anything."
+- **`AUTO_APPROVE=true`:** auto-runs **only vetted read-only commands**. That
+  means a *single* command (no pipes, redirection, `;`/`&&`, `$(…)`) whose
+  binary is on a read-only allowlist (`kubectl get/describe/logs/top`, `curl`,
+  `dig`, `journalctl`, `df`, `ps`, …; `kubectl`/`systemctl` are checked for
+  mutating verbs). **Anything else still prompts**, so in a non-interactive run
+  it is *declined*, not executed. Auto-approve does **not** mean "run anything."
 - A **denylist** is a last-ditch backstop for catastrophic, irreversible
   commands (`rm -r`, `mkfs`, `dd`, `kubectl delete`, `terraform destroy`,
   `helm uninstall`, reboot/shutdown, …). It runs even on manually-approved
-  commands — but it's a seatbelt, **not** a guarantee: not exhaustive, and not
+  commands, but it's a seatbelt, **not** a guarantee: not exhaustive, and not
   what keeps auto-mode safe (the allowlist is).
 - All tool output is truncated so a noisy command can't blow up the context.
 
 ## Incident memory (Qdrant)
 
 The agent remembers **resolved** incidents so it can recall a prior root cause
-before re-investigating from scratch — same symptom next time, much faster
-answer. Each resolved incident (symptom, environment, signals, root cause, fix)
-is stored as a point in a Qdrant collection (`sre-incidents`). At the start of a
-new investigation the agent searches that memory for similar past incidents and
-starts from what already worked.
+before re-investigating from scratch. The same symptom next time gets a much
+faster answer. Each resolved incident (symptom, environment, signals, root
+cause, fix) is stored as a point in a Qdrant collection (`sre-incidents`). At
+the start of a new investigation the agent searches that memory for similar past
+incidents and starts from what already worked.
+
+### How it resolves an incident
+
+The system prompt makes the agent follow this loop on every question:
+
+1. **Recall first.** Call `search_incidents` with the symptom. If a past incident
+   matches, start from its `root_cause` and `fix` and verify they still apply,
+   rather than re-deriving from zero.
+2. **Investigate.** If nothing matches, work the problem with read-only commands
+   one step at a time, reasoning over each output before the next.
+3. **Conclude.** Report the root cause, the evidence that proves it, and a
+   concrete fix or next action.
+4. **Remember.** Once the root cause is confirmed and a fix is known, call
+   `save_incident` with distinctive `signals` (error codes, `OOMKilled`, exit
+   codes) so the next occurrence is easy to recall.
+
+The payoff: the more incidents the agent resolves, the faster it resolves the
+next similar one, because step 1 short-circuits the investigation.
 
 Search is **hybrid**, with two named vectors per incident:
 
-- **`e5`** — dense, `intfloat/multilingual-e5-small` (384-dim, cosine). Matches by
-  *meaning*, across Polish and English — "pod się restartuje" finds a past
-  "CrashLoopBackOff" incident.
-- **`bm25`** — sparse, `qdrant/bm25` (IDF). Matches exact tokens — error codes,
-  namespace names, signals (`OOMKilled`, `exit_code=137`).
+- **`e5`** is dense, `intfloat/multilingual-e5-small` (384-dim, cosine). It
+  matches by *meaning*, across Polish and English, so "pod się restartuje" finds
+  a past "CrashLoopBackOff" incident.
+- **`bm25`** is sparse, `qdrant/bm25` (IDF). It matches exact tokens such as
+  error codes, namespace names, and signals (`OOMKilled`, `exit_code=137`).
 
 Results are fused with Reciprocal Rank Fusion (RRF), so you get both the
 semantically-similar and the keyword-exact hits.
+
+### Schema
+
+Collection `sre-incidents` holds one point per resolved incident. Each point has
+two named vectors and a JSON payload.
+
+| Vector | Type | Model | Config |
+|---|---|---|---|
+| `e5` | dense | `intfloat/multilingual-e5-small` | size 384, distance Cosine |
+| `bm25` | sparse | `qdrant/bm25` | modifier IDF |
+
+Both vectors are produced from the same indexed text, a join of `title`,
+`symptom`, and `signals`, embedded server-side by Cloud Inference.
+
+Payload fields:
+
+```jsonc
+{
+  "title":        "string",   // short symptom headline, e.g. "api-7xx CrashLoopBackOff in prod"
+  "symptom":      "string",   // full description of the observed symptoms (the text we embed)
+  "root_cause":   "string",   // confirmed root cause
+  "fix":          "string",   // remediation that resolved it
+  "environment":  {           // free-form context object
+    "cluster":    "string",
+    "namespace":  "string",
+    "service":    "string"
+  },
+  "signals":      ["string"], // distinctive tags, e.g. ["OOMKilled", "exit_code=137"]
+  "commands_run": ["string"], // key diagnostic commands that found the cause
+  "timestamp":    "string"    // ISO 8601 UTC, set automatically on save
+}
+```
+
+The point `id` is a generated UUID (hex). Only `title`, `symptom`, `root_cause`,
+and `fix` are required; the rest are optional.
 
 ### Why Qdrant
 
@@ -95,12 +148,12 @@ concrete reasons:
   bolt this together by hand.
 - **Auto-embedding (Cloud Inference) keeps the agent thin.** With
   `cloud_inference=True` you send the raw symptom *text*; the cluster computes
-  the embedding server-side. The agent needs no embedding model, no GPU, no
-  extra dependency — it just sends strings.
+  the embedding server-side. The agent needs no embedding model, no GPU, and no
+  extra dependency. It just sends strings.
 - **Managed, so no ops burden.** A managed Qdrant cluster means no JVM heap to
-  tune, no shards/ILM to babysit, no version upgrades to run — unlike standing
-  up Elasticsearch for the same job. The free tier is plenty for an incident
-  base that starts empty and grows slowly.
+  tune, no shards/ILM to babysit, and no version upgrades to run, unlike
+  standing up Elasticsearch for the same job. The free tier is plenty for an
+  incident base that starts empty and grows slowly.
 - **Multilingual by design.** The `multilingual-e5-small` model handles the
   mixed PL/EN way incidents actually get described.
 
@@ -116,25 +169,29 @@ cp .env.example .env                    # fill QDRANT_URL + QDRANT_API_KEY
 python setup_qdrant.py                  # one-time: creates the sre-incidents collection
 ```
 
-- `QDRANT_URL` — your managed cluster endpoint on **port 6333**.
-- `QDRANT_API_KEY` — a **read-write Database API key** (created in the cluster's
+- `QDRANT_URL` is your managed cluster endpoint on **port 6333**.
+- `QDRANT_API_KEY` is a **read-write Database API key** (created in the cluster's
   API Keys panel), not a cloud-management key.
-- Cloud Inference must be enabled on the cluster (Inference tab) — it lists the
+- Cloud Inference must be enabled on the cluster (Inference tab). It lists the
   E5 and BM25 models when it is.
 
 ## Extending
 
 Add a tool in `tools.py`: write the function, add its JSON spec to
 `TOOLS_SPEC`, and register it in `TOOL_IMPLS`. If it mutates state, add its
-name to `NEEDS_APPROVAL`. That's it — the agent loop picks it up automatically.
+name to `NEEDS_APPROVAL`. That's it. The agent loop picks it up automatically.
 
 ## Config
 
 | Env var | Default | Description |
 |---|---|---|
-| `HF_TOKEN` | — | Hugging Face token (required). |
+| `HF_TOKEN` | none | Hugging Face token (required). |
 | `MODEL_ID` | `moonshotai/Kimi-K2-Instruct` | Any tool-capable model on the HF router. Pin a provider with `model:provider`. |
 | `AUTO_APPROVE` | `false` | Auto-run only vetted **read-only** `run_shell` commands; anything that could mutate still prompts. |
-| `QDRANT_URL` | — | Managed Qdrant cluster endpoint (port 6333). Required for incident memory. |
-| `QDRANT_API_KEY` | — | Read-write Database API key for the cluster. |
+| `QDRANT_URL` | none | Managed Qdrant cluster endpoint (port 6333). Required for incident memory. |
+| `QDRANT_API_KEY` | none | Read-write Database API key for the cluster. |
 | `QDRANT_COLLECTION` | `sre-incidents` | Collection holding resolved incidents. |
+
+## License
+
+[MIT](LICENSE) © 2026 Arkadiusz Borucki
