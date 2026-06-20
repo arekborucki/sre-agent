@@ -14,6 +14,7 @@ Design notes:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -21,6 +22,8 @@ import subprocess
 import urllib.request
 import urllib.error
 from time import perf_counter
+
+import store
 
 MAX_OUTPUT_CHARS = 16000
 DEFAULT_TIMEOUT = 60
@@ -174,6 +177,37 @@ def http_check(url: str, timeout: int = 10) -> str:
         return f"ERROR after {ms:.0f}ms: {type(e).__name__}: {e}"
 
 
+def search_incidents(symptom: str, top_k: int = 5) -> str:
+    """Recall resolved past incidents resembling `symptom` (hybrid search)."""
+    try:
+        hits = store.search_incidents(symptom, top_k=int(top_k))
+    except Exception as e:  # noqa: BLE001 — surface memory errors to the model, don't crash
+        return f"ERROR searching incident memory: {type(e).__name__}: {e}"
+    if not hits:
+        return "No similar past incidents found. Investigate from scratch."
+    return json.dumps(hits, ensure_ascii=False, indent=2)
+
+
+def save_incident(
+    title: str,
+    symptom: str,
+    root_cause: str,
+    fix: str,
+    environment: dict | None = None,
+    signals: list | None = None,
+    commands_run: list | None = None,
+) -> str:
+    """Store a resolved incident so future investigations can recall it."""
+    try:
+        point_id = store.save_incident(
+            title=title, symptom=symptom, root_cause=root_cause, fix=fix,
+            environment=environment, signals=signals, commands_run=commands_run,
+        )
+    except Exception as e:  # noqa: BLE001
+        return f"ERROR saving incident: {type(e).__name__}: {e}"
+    return f"Saved incident '{title}' to memory (id={point_id})."
+
+
 # ───  Specs sent to the model (OpenAI tool schema) ───
 
 TOOLS_SPEC = [
@@ -227,13 +261,74 @@ TOOLS_SPEC = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_incidents",
+            "description": (
+                "Recall resolved PAST incidents similar to the current symptom, from "
+                "incident memory (hybrid semantic + keyword search). Call this FIRST, "
+                "before investigating, to reuse a known root cause and fix. Returns "
+                "matches with their root_cause and fix."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symptom": {
+                        "type": "string",
+                        "description": "The current symptom in natural language (PL or EN), e.g. 'pod restartuje się co 30s, exit 137'.",
+                    },
+                    "top_k": {"type": "integer", "description": "How many matches to return (default 5)."},
+                },
+                "required": ["symptom"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_incident",
+            "description": (
+                "Store a RESOLVED incident in memory so future investigations can recall "
+                "it. Call this only once you have confirmed the root cause and a fix."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short symptom headline, e.g. 'api-7xx CrashLoopBackOff in prod'."},
+                    "symptom": {"type": "string", "description": "Full description of the observed symptoms."},
+                    "root_cause": {"type": "string", "description": "The confirmed root cause."},
+                    "fix": {"type": "string", "description": "The fix or remediation that resolved it."},
+                    "environment": {
+                        "type": "object",
+                        "description": "Context, e.g. {\"cluster\": \"hub-prod\", \"namespace\": \"prod\", \"service\": \"api\"}.",
+                    },
+                    "signals": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Distinctive signals/tags, e.g. [\"OOMKilled\", \"exit_code=137\"].",
+                    },
+                    "commands_run": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Key diagnostic commands that found the cause.",
+                    },
+                },
+                "required": ["title", "symptom", "root_cause", "fix"],
+            },
+        },
+    },
 ]
 
 TOOL_IMPLS = {
     "run_shell": run_shell,
     "read_file": read_file,
     "http_check": http_check,
+    "search_incidents": search_incidents,
+    "save_incident": save_incident,
 }
 
 # Tools that mutate the system / run arbitrary commands need user approval.
+# Incident memory is internal (Qdrant), not the live system, so it runs freely;
+# search is read-only and save only writes to the agent's own knowledge base.
 NEEDS_APPROVAL = {"run_shell"}
