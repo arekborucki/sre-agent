@@ -55,7 +55,8 @@ Guidelines:
 - When you reach a conclusion, give: (1) root cause, (2) the evidence that
   proves it, (3) a concrete fix or next action. Be concise.
 - Once the root cause is confirmed and a fix is known, call save_incident so
-  the next investigation can reuse it. Capture distinctive signals (error
+  the next investigation can reuse it. Write the title and fields in ENGLISH
+  (the title becomes the archive filename). Capture distinctive signals (error
   codes, OOMKilled, exit codes) so similar incidents are easy to recall.
 - If a tool fails with auth/permission/missing-binary errors, stop and tell
   the user — that's an environment problem, not something to brute-force.

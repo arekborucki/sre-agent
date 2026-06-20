@@ -295,7 +295,7 @@ TOOLS_SPEC = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Short symptom headline, e.g. 'api-7xx CrashLoopBackOff in prod'."},
+                    "title": {"type": "string", "description": "Short symptom headline in ENGLISH (used as the archive filename), e.g. 'api-7xx CrashLoopBackOff in prod'."},
                     "symptom": {"type": "string", "description": "Full description of the observed symptoms."},
                     "root_cause": {"type": "string", "description": "The confirmed root cause."},
                     "fix": {"type": "string", "description": "The fix or remediation that resolved it."},

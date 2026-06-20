@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import unicodedata
 from functools import lru_cache
 
 BUCKET = os.getenv("HF_INCIDENTS_BUCKET")  # "username/sre-agent-incidents" or None
@@ -24,6 +26,20 @@ BUCKET = os.getenv("HF_INCIDENTS_BUCKET")  # "username/sre-agent-incidents" or N
 
 def enabled() -> bool:
     return bool(BUCKET and os.getenv("HF_TOKEN"))
+
+
+def _slug(text: str, maxlen: int = 80) -> str:
+    """Turn an (English) title into a readable, filesystem-safe filename stem,
+    e.g. "api-7xx CrashLoopBackOff in prod" -> "api-7xx-crashloopbackoff-in-prod".
+
+    Any stray accents are stripped to ASCII as a safety net. Note: titles are not
+    unique, so two incidents with the same title map to the same file and the
+    later one overwrites the earlier (buckets are mutable). The Qdrant point id
+    stays a UUID, so search is unaffected.
+    """
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
+    return slug[:maxlen].strip("-") or "incident"
 
 
 @lru_cache(maxsize=1)
@@ -46,7 +62,9 @@ def archive_incident(incident_id: str, payload: dict) -> str | None:
 
     record = {"id": incident_id, **payload}
     blob = json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8")
-    path_in_bucket = f"incidents/{incident_id}.json"
+    # Filename is the (English) title slug for readability; the UUID lives inside
+    # the JSON as "id" to cross-reference the Qdrant point.
+    path_in_bucket = f"incidents/{_slug(payload.get('title', ''))}.json"
     # add=[(source, dest)]: source may be bytes or a local path. Non-transactional.
     batch_bucket_files(_ensure_bucket(), add=[(blob, path_in_bucket)])
     return f"hf://buckets/{BUCKET}/{path_in_bucket}"
