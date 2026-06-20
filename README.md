@@ -5,9 +5,9 @@ OpenAI-compatible HF router) and a small set of diagnostic tools. The model
 investigates an incident by running read-only commands, reasoning over the
 output, and proposing a root cause + fix.
 
-The loop is deliberately minimal: **send prompt + tools → model asks for a tool
-→ run it → feed the result back → repeat until the model answers in plain
-text.**
+The loop is deliberately minimal: **send prompt + tools + skill catalog → model
+asks for a tool (run a command, recall a past incident, or load a skill) → run
+it → feed the result back → repeat until the model answers in plain text.**
 
 On top of that loop it has two capabilities that compound over time. An
 **incident memory** it searches before investigating and writes to after
