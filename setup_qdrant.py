@@ -4,10 +4,10 @@ Hybrid search over past, resolved incidents so the agent can recall a prior
 root cause before re-investigating from scratch. Two named vectors, both
 computed server-side by Qdrant Cloud Inference (the agent never embeds locally):
 
-  - "e5"   : dense, intfloat/multilingual-e5-small (384-dim, cosine) — handles
-             PL+EN symptom descriptions by meaning ("pod się restartuje" ~
-             "CrashLoopBackOff").
-  - "bm25" : sparse, qdrant/bm25 (IDF) — exact keyword matches (error codes,
+  - "e5"   : dense, intfloat/multilingual-e5-small (384-dim, cosine), matches
+             symptom descriptions by meaning and is multi-language, so a
+             paraphrased symptom still finds the same past failure.
+  - "bm25" : sparse, qdrant/bm25 (IDF), exact keyword matches (error codes,
              namespace names, signals like OOMKilled / exit_code=137).
 
 Run once:

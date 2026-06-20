@@ -9,6 +9,13 @@ The loop is deliberately minimal: **send prompt + tools → model asks for a too
 → run it → feed the result back → repeat until the model answers in plain
 text.**
 
+On top of that loop it has two capabilities that compound over time. An
+**incident memory** it searches before investigating and writes to after
+resolving, so a recurring problem is answered from a past root cause instead of
+from scratch (see [Incident memory](#incident-memory-qdrant)). And on-demand
+**skills**, curated best-practice playbooks such as kubectl debugging that the
+model loads only when relevant (see [Skills](#skills)).
+
 ## Setup
 
 ```bash
@@ -97,8 +104,8 @@ next similar one, because step 1 short-circuits the investigation.
 Search is **hybrid**, with two named vectors per incident:
 
 - **`e5`** is dense, `intfloat/multilingual-e5-small` (384-dim, cosine). It
-  matches by *meaning*, across Polish and English, so "pod się restartuje" finds
-  a past "CrashLoopBackOff" incident.
+  matches by *meaning* and is multi-language, so a paraphrased symptom in any
+  supported language still finds a past incident describing the same failure.
 - **`bm25`** is sparse, `qdrant/bm25` (IDF). It matches exact tokens such as
   error codes, namespace names, and signals (`OOMKilled`, `exit_code=137`).
 
@@ -158,7 +165,7 @@ concrete reasons:
   standing up Elasticsearch for the same job. The free tier is plenty for an
   incident base that starts empty and grows slowly.
 - **Multilingual by design.** The `multilingual-e5-small` model handles the
-  mixed PL/EN way incidents actually get described.
+  mixed-language way incidents actually get described.
 
 The storage layer is intentionally isolated behind a small interface
 (`save_incident` / `search_incidents`), so if the base ever outgrows Qdrant the

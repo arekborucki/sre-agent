@@ -7,7 +7,7 @@ touching them.
 Both vectors are computed server-side by Qdrant Cloud Inference (the client is
 created with cloud_inference=True), so we only ever send text — no local
 embedding model, no GPU:
-  - "e5"   dense  : intfloat/multilingual-e5-small  (meaning, PL+EN)
+  - "e5"   dense  : intfloat/multilingual-e5-small  (meaning, multi-language)
   - "bm25" sparse : qdrant/bm25                      (exact tokens)
 Queries fuse both lists with Reciprocal Rank Fusion (RRF).
 """
