@@ -89,7 +89,7 @@ def http_check(url: str, timeout: int = 10) -> str:
         return f"ERROR after {ms:.0f}ms: {type(e).__name__}: {e}"
 
 
-# ─── Specs sent to the model (OpenAI tool schema) ───
+# ───  Specs sent to the model (OpenAI tool schema) ───
 
 TOOLS_SPEC = [
     {
