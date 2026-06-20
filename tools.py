@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import urllib.request
 import urllib.error
@@ -24,11 +25,95 @@ from time import perf_counter
 MAX_OUTPUT_CHARS = 16000
 DEFAULT_TIMEOUT = 60
 
-# Block the most catastrophic patterns even when auto-approve is on.
+# ── Last-ditch denylist (backstop, NOT the real guard) ──────────────────────
+# Catastrophic, irreversible commands that should never run through this tool,
+# even when a human approves them by reflex. This is a seatbelt, not a wall:
+# you cannot reliably block destructive shell with regex (flag reordering,
+# `bash -c`, `$(…)`, env indirection all slip past). The approval prompt and
+# the read-only allowlist below are what actually keep auto-mode safe.
 _DESTRUCTIVE = re.compile(
-    r"\brm\s+-rf\s+/|\bmkfs\b|\bdd\s+if=|\b:\(\)\s*\{|\bshutdown\b|\breboot\b|\bhalt\b"
-    r"|>\s*/dev/sd|\bkubectl\s+delete\b|\bterraform\s+(destroy|apply)\b"
+    r"\brm\s+(-[a-z]*r|--recursive)"        # recursive delete, any flag order/case
+    r"|--no-preserve-root"
+    r"|\bfind\b[^\n]*\s-delete\b"
+    r"|\bmkfs\b|\bdd\s+if=|\bdd\b[^\n]*\bof=/dev/"
+    r"|:\(\)\s*\{"                          # fork bomb
+    r"|\b(shutdown|reboot|halt|poweroff)\b"
+    r"|>\s*/dev/(sd|nvme|xvd)"              # clobber a block device
+    r"|\bkubectl\s+delete\b"
+    r"|\bterraform\s+destroy\b"
+    r"|\bhelm\s+(uninstall|delete)\b",
+    re.IGNORECASE,
 )
+
+# ── Read-only allowlist: the real guard for AUTO_APPROVE ─────────────────────
+# Under AUTO_APPROVE, only commands that pass is_auto_safe() run without a
+# prompt. Everything else (any mutation, anything we can't vouch for) still
+# prompts — so a non-interactive run declines it rather than executing blindly.
+
+# Shell constructs that could chain/hide/redirect a second command. If any are
+# present, the command is NOT auto-safe (it must be a single, simple command).
+_SHELL_METACHARS = re.compile(r"[;&|`<>\n()]|\$[({]")
+
+# kubectl: allow only if it contains a read verb and NO mutating verb.
+_KUBECTL_READ_VERBS = {
+    "get", "describe", "logs", "top", "version", "explain", "events",
+    "api-resources", "api-versions", "cluster-info", "config", "auth",
+}
+_KUBECTL_WRITE_VERBS = {
+    "delete", "drain", "cordon", "uncordon", "taint", "scale", "patch",
+    "replace", "apply", "edit", "set", "rollout", "annotate", "label",
+    "create", "run", "expose", "autoscale", "exec", "cp", "attach",
+    "port-forward", "proxy", "debug",
+}
+_SYSTEMCTL_WRITE_VERBS = {
+    "start", "stop", "restart", "reload", "enable", "disable", "mask",
+    "unmask", "kill", "isolate", "set-property", "daemon-reload", "edit",
+}
+# Plain binaries that only read/observe.
+_SAFE_BINARIES = {
+    "curl", "wget", "dig", "nslookup", "host", "getent",
+    "ps", "top", "free", "df", "du", "uptime", "vmstat", "iostat", "mpstat",
+    "journalctl", "dmesg", "uname", "hostname", "whoami", "id", "date",
+    "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "zcat",
+    "ls", "stat", "find", "sort", "uniq", "cut", "tr", "column",
+    "ss", "netstat", "ip", "ping", "nproc", "lscpu", "lsblk",
+    "echo", "printenv", "env", "true",
+}
+# Flags that turn an otherwise-safe binary into a writer/executor.
+_DANGEROUS_FLAGS = {
+    "sed": {"-i", "--in-place"},
+    "find": {"-delete", "-exec", "-execdir", "-fprint", "-fprintf", "-fls"},
+    "curl": {"-o", "-O", "--output", "--upload-file", "-T",
+             "-X", "--request", "-d", "--data", "--data-binary", "--data-raw"},
+    "wget": {"-O", "--output-document", "--post-data", "--post-file"},
+    "env": {"-i"},  # `env -i` resets environment; also used to launch programs
+}
+
+
+def is_auto_safe(cmd: str) -> bool:
+    """Whether `cmd` is a single read-only command safe to auto-run under
+    AUTO_APPROVE. Conservative: anything not clearly read-only returns False,
+    and the caller asks for confirmation instead of running it."""
+    if not cmd or _DESTRUCTIVE.search(cmd) or _SHELL_METACHARS.search(cmd):
+        return False
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    binary = os.path.basename(tokens[0])
+    rest = set(tokens[1:])
+
+    if binary == "kubectl":
+        if rest & _KUBECTL_WRITE_VERBS:
+            return False
+        return bool(rest & _KUBECTL_READ_VERBS)
+    if binary == "systemctl":
+        return not (rest & _SYSTEMCTL_WRITE_VERBS)
+    if rest & _DANGEROUS_FLAGS.get(binary, set()):
+        return False
+    return binary in _SAFE_BINARIES
 
 
 def _truncate(text: str) -> str:

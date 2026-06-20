@@ -23,7 +23,7 @@ import sys
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from tools import TOOLS_SPEC, TOOL_IMPLS, NEEDS_APPROVAL
+from tools import TOOLS_SPEC, TOOL_IMPLS, NEEDS_APPROVAL, is_auto_safe
 
 load_dotenv()
 
@@ -50,13 +50,28 @@ Guidelines:
 
 
 def approve(name: str, args: dict) -> bool:
-    """Ask the user before running a state-touching tool."""
-    if os.getenv("AUTO_APPROVE", "false").lower() == "true":
-        return True
+    """Decide whether to run a tool, prompting the user when needed.
+
+    AUTO_APPROVE only auto-runs vetted read-only commands (see is_auto_safe);
+    anything that could mutate state still prompts — so a non-interactive run
+    declines it rather than executing blindly. The prompt, not the denylist,
+    is the real safety boundary.
+    """
     if name not in NEEDS_APPROVAL:
         return True
-    print(f"\n  \033[33m? {name}\033[0m {args.get('cmd', json.dumps(args))}")
-    return input("  run it? [y/N] ").strip().lower() in ("y", "yes")
+    auto = os.getenv("AUTO_APPROVE", "false").lower() == "true"
+    cmd = args.get("cmd", "")
+    if auto and name == "run_shell" and is_auto_safe(cmd):
+        return True
+    label = cmd or json.dumps(args)
+    if auto:
+        print("\n  \033[2m(AUTO_APPROVE on, but this isn't a vetted read-only command)\033[0m")
+    print(f"  \033[33m? {name}\033[0m {label}")
+    try:
+        return input("  run it? [y/N] ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
 
 
 def run_tool(name: str, args: dict) -> str:
