@@ -28,7 +28,13 @@ from tools import TOOLS_SPEC, TOOL_IMPLS, NEEDS_APPROVAL, is_auto_safe
 load_dotenv()
 
 HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
-MAX_ITERATIONS = 50
+MAX_ITERATIONS = 20
+# Each API call resends the whole history, so old tool outputs (kubectl/logs/
+# curl dumps) pile up and cost grows quadratically. Keep the N most recent tool
+# results in full; shrink older ones to a stub (see shrink_old_outputs).
+KEEP_RECENT_TOOL_OUTPUTS = 6
+# Cap a single model reply so one verbose answer can't blow up the context.
+MAX_RESPONSE_TOKENS = 2000
 
 SYSTEM_PROMPT = """You are an SRE debugging assistant operating in a terminal.
 
@@ -88,14 +94,34 @@ def run_tool(name: str, args: dict) -> str:
         return f"ERROR running {name}: {type(e).__name__}: {e}"
 
 
+def shrink_old_outputs(messages: list) -> None:
+    """Replace the body of OLD tool outputs with a short stub, in place.
+
+    We never drop messages: the chat protocol requires every assistant message
+    that has tool_calls to be followed by `tool` messages with matching
+    tool_call_ids, so removing one would orphan the pair and the API would 400.
+    Shrinking only the *content* keeps that structure intact while removing the
+    bulk. The model has already reasoned over those old outputs (its conclusions
+    live in the assistant messages, which we keep), so the raw text is dead
+    weight after KEEP_RECENT_TOOL_OUTPUTS newer results exist.
+    """
+    tool_idxs = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    for i in tool_idxs[:-KEEP_RECENT_TOOL_OUTPUTS] if KEEP_RECENT_TOOL_OUTPUTS else tool_idxs:
+        body = messages[i].get("content") or ""
+        if not body.startswith("[older tool output elided"):
+            messages[i]["content"] = f"[older tool output elided, {len(body)} chars]"
+
+
 def run_turn(client: OpenAI, model: str, messages: list) -> str:
     """Drive one user turn to completion (the tool loop)."""
     for _ in range(MAX_ITERATIONS):
+        shrink_old_outputs(messages)  # keep context (and cost) bounded
         resp = client.chat.completions.create(
             model=model,
             messages=messages,
             tools=TOOLS_SPEC,
             temperature=0.0,
+            max_tokens=MAX_RESPONSE_TOKENS,
         )
         msg = resp.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))

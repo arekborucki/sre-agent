@@ -76,4 +76,4 @@ name to `NEEDS_APPROVAL`. That's it — the agent loop picks it up automatically
 |---|---|---|
 | `HF_TOKEN` | — | Hugging Face token (required). |
 | `MODEL_ID` | `moonshotai/Kimi-K2-Instruct` | Any tool-capable model on the HF router. Pin a provider with `model:provider`. |
-| `AUTO_APPROVE` | `false` | Skip per-command confirmation for `run_shell`. |
+| `AUTO_APPROVE` | `false` | Auto-run only vetted **read-only** `run_shell` commands; anything that could mutate still prompts. |
