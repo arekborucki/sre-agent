@@ -93,6 +93,12 @@ _DANGEROUS_FLAGS = {
     "env": {"-i"},  # `env -i` resets environment; also used to launch programs
 }
 
+_DANGEROUS_FLAG_PREFIXES = {
+    "curl": ("-o", "-O", "--output=", "--upload-file=", "-T", "-X", "--request=", "-d",
+             "--data=", "--data-binary=", "--data-raw="),
+    "wget": ("-O", "--output-document=", "--post-data=", "--post-file="),
+}
+
 
 def is_auto_safe(cmd: str) -> bool:
     """Whether `cmd` is a single read-only command safe to auto-run under
@@ -117,6 +123,9 @@ def is_auto_safe(cmd: str) -> bool:
         return not (rest & _SYSTEMCTL_WRITE_VERBS)
     if rest & _DANGEROUS_FLAGS.get(binary, set()):
         return False
+    for token in tokens[1:]:
+        if any(token.startswith(prefix) for prefix in _DANGEROUS_FLAG_PREFIXES.get(binary, ())):
+            return False
     return binary in _SAFE_BINARIES
 
 
@@ -353,7 +362,8 @@ TOOL_IMPLS = {
     "load_skill": load_skill,
 }
 
-# Tools that mutate the system / run arbitrary commands need user approval.
+# Tools that mutate the system, run arbitrary commands, or can expose local
+# secrets need user approval.
 # Incident memory is internal (Qdrant), not the live system, so it runs freely;
 # search is read-only and save only writes to the agent's own knowledge base.
-NEEDS_APPROVAL = {"run_shell"}
+NEEDS_APPROVAL = {"run_shell", "read_file"}

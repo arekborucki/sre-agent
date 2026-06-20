@@ -18,9 +18,12 @@ model loads only when relevant (see [Skills](#skills)).
 
 ## Setup
 
+Use Python 3.11. The dependency set is not currently reliable on Python 3.13
+because `qdrant-client` depends on `grpcio`.
+
 ```bash
 cd sre-agent
-python3 -m venv .venv && source .venv/bin/activate
+/opt/homebrew/bin/python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env        # then put your HF_TOKEN in .env
 ```
@@ -60,7 +63,9 @@ Things like `kubectl scale --replicas=0`, `sed -i`, `find -delete`,
 `bash -c '…'`, `$(…)`, and env indirection all slip past regex. So the model
 is built around *what auto-runs*, not *what's forbidden*:
 
-- **Interactive (default):** `run_shell` asks before **every** command.
+- **Interactive (default):** `run_shell` asks before **every** command, and
+  `read_file` asks before reading local files so secrets are not exposed by
+  surprise.
 - **`AUTO_APPROVE=true`:** auto-runs **only vetted read-only commands**. That
   means a *single* command (no pipes, redirection, `;`/`&&`, `$(…)`) whose
   binary is on a read-only allowlist (`kubectl get/describe/logs/top`, `curl`,
@@ -174,8 +179,8 @@ backend can be swapped without touching the agent or its tools.
 ### Optional: archive to a HF Storage Bucket
 
 When `HF_INCIDENTS_BUCKET` is set, each resolved incident is also written to a
-private Hugging Face Storage Bucket as `incidents/<id>.json`, a durable copy
-alongside Qdrant.
+private Hugging Face Storage Bucket under `incidents/<title-slug>.json`, with
+the generated Qdrant point id stored inside the JSON payload.
 
 **What a HF Storage Bucket is.** A bucket is a repo type on the Hugging Face Hub
 that provides S3-like object storage, powered by the Xet backend. Unlike a
@@ -193,14 +198,15 @@ problems, and pairing them gives each job the right tool:
 - **The bucket is the durable archive.** It is a cheap, plain copy of every
   incident as readable JSON, independent of Qdrant. If the Qdrant collection is
   lost or rebuilt, the incidents still exist as objects you can re-ingest, and a
-  human can read `incidents/<id>.json` directly without any vector tooling.
+  human can read the JSON object directly without any vector tooling.
 - **Portability and sharing.** The archive lives under your own HF namespace,
   reachable from any cloud or teammate, decoupled from the search backend.
 
 The bucket write is best-effort: if it fails, the save still succeeds because
 Qdrant already holds the incident, and a warning is logged. Buckets are
-non-versioned and mutable, so re-saving the same id overwrites the previous
-object. Leave `HF_INCIDENTS_BUCKET` empty to run on Qdrant alone.
+non-versioned and mutable, so saving another incident with the same title slug
+overwrites the previous archive object. Leave `HF_INCIDENTS_BUCKET` empty to run
+on Qdrant alone.
 
 ### Setup
 
@@ -242,8 +248,9 @@ node NotReady, and DNS/Service debugging.
 ## Extending
 
 Add a tool in `tools.py`: write the function, add its JSON spec to
-`TOOLS_SPEC`, and register it in `TOOL_IMPLS`. If it mutates state, add its
-name to `NEEDS_APPROVAL`. That's it. The agent loop picks it up automatically.
+`TOOLS_SPEC`, and register it in `TOOL_IMPLS`. If it mutates state, runs
+arbitrary commands, or can expose local secrets, add its name to
+`NEEDS_APPROVAL`. That's it. The agent loop picks it up automatically.
 
 ## Config
 
@@ -251,11 +258,11 @@ name to `NEEDS_APPROVAL`. That's it. The agent loop picks it up automatically.
 |---|---|---|
 | `HF_TOKEN` | none | Hugging Face token (required). |
 | `MODEL_ID` | `moonshotai/Kimi-K2-Instruct` | Any tool-capable model on the HF router. Pin a provider with `model:provider`. |
-| `AUTO_APPROVE` | `false` | Auto-run only vetted **read-only** `run_shell` commands; anything that could mutate still prompts. |
+| `AUTO_APPROVE` | `false` | Auto-run only vetted **read-only** `run_shell` commands; anything that could mutate or expose local files still prompts. |
 | `QDRANT_URL` | none | Managed Qdrant cluster endpoint (port 6333). Required for incident memory. |
 | `QDRANT_API_KEY` | none | Read-write Database API key for the cluster. |
 | `QDRANT_COLLECTION` | `sre-incidents` | Collection holding resolved incidents. |
-| `HF_INCIDENTS_BUCKET` | none | Optional `username/bucket` to also archive incidents as `incidents/<id>.json`. Empty disables it. |
+| `HF_INCIDENTS_BUCKET` | none | Optional `username/bucket` to also archive incidents as `incidents/<title-slug>.json`. Empty disables it. |
 
 ## License
 
