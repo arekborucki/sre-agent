@@ -18,12 +18,9 @@ model loads only when relevant (see [Skills](#skills)).
 
 ## Setup
 
-Use Python 3.11. The dependency set is not currently reliable on Python 3.13
-because `qdrant-client` depends on `grpcio`.
-
 ```bash
 cd sre-agent
-/opt/homebrew/bin/python3.11 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env        # then put your HF_TOKEN in .env
 ```
