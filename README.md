@@ -161,6 +161,37 @@ The storage layer is intentionally isolated behind a small interface
 (`save_incident` / `search_incidents`), so if the base ever outgrows Qdrant the
 backend can be swapped without touching the agent or its tools.
 
+### Optional: archive to a HF Storage Bucket
+
+When `HF_INCIDENTS_BUCKET` is set, each resolved incident is also written to a
+private Hugging Face Storage Bucket as `incidents/<id>.json`, a durable copy
+alongside Qdrant.
+
+**What a HF Storage Bucket is.** A bucket is a repo type on the Hugging Face Hub
+that provides S3-like object storage, powered by the Xet backend. Unlike a
+git-based dataset repo, a bucket is non-versioned and mutable, built for simple
+fast storage of files such as logs, artifacts, or any large collection that does
+not need version control. It has per-TB pricing, a built-in CDN, Xet
+deduplication, and no git overhead, so writes are immediate with no commit queue.
+
+**Why store in both Qdrant and a bucket.** The two systems solve different
+problems, and pairing them gives each job the right tool:
+
+- **Qdrant is the search index.** Recalling a similar past incident is a search
+  problem, and Qdrant answers it with hybrid dense + sparse retrieval. That is
+  what powers `search_incidents`. A bucket cannot do semantic search.
+- **The bucket is the durable archive.** It is a cheap, plain copy of every
+  incident as readable JSON, independent of Qdrant. If the Qdrant collection is
+  lost or rebuilt, the incidents still exist as objects you can re-ingest, and a
+  human can read `incidents/<id>.json` directly without any vector tooling.
+- **Portability and sharing.** The archive lives under your own HF namespace,
+  reachable from any cloud or teammate, decoupled from the search backend.
+
+The bucket write is best-effort: if it fails, the save still succeeds because
+Qdrant already holds the incident, and a warning is logged. Buckets are
+non-versioned and mutable, so re-saving the same id overwrites the previous
+object. Leave `HF_INCIDENTS_BUCKET` empty to run on Qdrant alone.
+
 ### Setup
 
 ```bash
@@ -191,6 +222,7 @@ name to `NEEDS_APPROVAL`. That's it. The agent loop picks it up automatically.
 | `QDRANT_URL` | none | Managed Qdrant cluster endpoint (port 6333). Required for incident memory. |
 | `QDRANT_API_KEY` | none | Read-write Database API key for the cluster. |
 | `QDRANT_COLLECTION` | `sre-incidents` | Collection holding resolved incidents. |
+| `HF_INCIDENTS_BUCKET` | none | Optional `username/bucket` to also archive incidents as `incidents/<id>.json`. Empty disables it. |
 
 ## License
 

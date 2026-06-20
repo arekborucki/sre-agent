@@ -15,11 +15,14 @@ Queries fuse both lists with Reciprocal Rank Fusion (RRF).
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 
 from qdrant_client import QdrantClient, models
+
+import hf_archive
 
 COLLECTION = os.getenv("QDRANT_COLLECTION", "sre-incidents")
 E5_MODEL = "intfloat/multilingual-e5-small"
@@ -56,6 +59,18 @@ def save_incident(
     """Store a resolved incident. Returns the new point id."""
     text = _embedding_text(title, symptom, signals)
     point_id = uuid.uuid4().hex
+    payload = {
+        "title": title,
+        "symptom": symptom,
+        "root_cause": root_cause,
+        "fix": fix,
+        "environment": environment or {},
+        "signals": signals or [],
+        "commands_run": commands_run or [],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # 1. Qdrant: the search index (source of truth for recall).
     _client().upsert(
         collection_name=COLLECTION,
         points=[
@@ -65,19 +80,19 @@ def save_incident(
                     "e5": models.Document(text=text, model=E5_MODEL),
                     "bm25": models.Document(text=text, model=BM25_MODEL),
                 },
-                payload={
-                    "title": title,
-                    "symptom": symptom,
-                    "root_cause": root_cause,
-                    "fix": fix,
-                    "environment": environment or {},
-                    "signals": signals or [],
-                    "commands_run": commands_run or [],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                },
+                payload=payload,
             )
         ],
     )
+
+    # 2. HF Storage Bucket: durable archive (best-effort, never breaks the save).
+    try:
+        uri = hf_archive.archive_incident(point_id, payload)
+        if uri:
+            print(f"  archived incident to {uri}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — Qdrant already has it; HF is a bonus copy
+        print(f"  WARNING: HF bucket archive failed: {type(e).__name__}: {e}", file=sys.stderr)
+
     return point_id
 
 
