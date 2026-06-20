@@ -44,11 +44,24 @@ python agent.py
 
 ## Safety
 
-- `run_shell` asks for confirmation before **every** command. Set
-  `AUTO_APPROVE=true` in `.env` to skip the prompt (only when you trust it).
-- A denylist refuses obviously destructive commands (`rm -rf /`, `mkfs`,
-  `kubectl delete`, `terraform destroy/apply`, reboot/shutdown, ...) even with
-  auto-approve on.
+The real safety boundary is the **approval prompt**, not a denylist — you
+can't reliably block destructive shell commands with pattern matching
+(`kubectl scale --replicas=0`, `sed -i`, `find -delete`, `bash -c '…'`,
+`$(…)`, env indirection — all slip past regex). So the model is built around
+*what auto-runs*, not *what's forbidden*:
+
+- **Interactive (default):** `run_shell` asks before **every** command.
+- **`AUTO_APPROVE=true`:** auto-runs **only vetted read-only commands** — a
+  *single* command (no pipes, redirection, `;`/`&&`, `$(…)`) whose binary is on
+  a read-only allowlist (`kubectl get/describe/logs/top`, `curl`, `dig`,
+  `journalctl`, `df`, `ps`, …; `kubectl`/`systemctl` are checked for mutating
+  verbs). **Anything else still prompts** — so in a non-interactive run it is
+  *declined*, not executed. Auto-approve does **not** mean "run anything."
+- A **denylist** is a last-ditch backstop for catastrophic, irreversible
+  commands (`rm -r`, `mkfs`, `dd`, `kubectl delete`, `terraform destroy`,
+  `helm uninstall`, reboot/shutdown, …). It runs even on manually-approved
+  commands — but it's a seatbelt, **not** a guarantee: not exhaustive, and not
+  what keeps auto-mode safe (the allowlist is).
 - All tool output is truncated so a noisy command can't blow up the context.
 
 ## Extending
