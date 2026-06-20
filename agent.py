@@ -1,6 +1,6 @@
 """A minimal SRE debugging agent.
 
-Same shape as moon-bot's agent loop, but ~150 lines and Python:
+A small tool-calling loop, ~150 lines of Python:
   send prompt + tools -> model asks for a tool -> we run it -> feed result back
   -> loop until the model answers in plain text.
 
