@@ -209,6 +209,29 @@ python setup_qdrant.py                  # one-time: creates the sre-incidents co
 - Cloud Inference must be enabled on the cluster (Inference tab). It lists the
   E5 and BM25 models when it is.
 
+## Skills
+
+Skills are curated best-practice playbooks the model can pull in on demand. Each
+skill is a markdown file in `skills/` with simple frontmatter:
+
+```markdown
+---
+name: kubectl
+description: Diagnosing Kubernetes problems with read-only commands.
+---
+# ...full playbook body...
+```
+
+The mechanism is progressive disclosure, the same idea as Claude Code skills.
+Only the **catalog** (each skill's name and description) is appended to the
+system prompt, which is cheap. When the model judges a skill relevant, it calls
+the `load_skill` tool to read that skill's full body, so the body costs tokens
+only when actually used. This keeps the prompt small and scales to many skills.
+
+To add a skill, drop a new `.md` file in `skills/`. No code change needed. The
+shipped `kubectl` skill covers CrashLoopBackOff, OOMKilled, Pending, ImagePull,
+node NotReady, and DNS/Service debugging.
+
 ## Extending
 
 Add a tool in `tools.py`: write the function, add its JSON spec to
