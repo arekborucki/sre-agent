@@ -16,6 +16,12 @@ from scratch (see [Incident memory](#incident-memory-qdrant)). And on-demand
 **skills**, curated best-practice playbooks such as kubectl debugging that the
 model loads only when relevant (see [Skills](#skills)).
 
+The loop is resilient: each model call has a request timeout and retries
+transient router errors (timeouts, 5xx, a cold model warming up) with
+exponential backoff, so one blip does not crash the investigation. If the API
+stays unavailable after retries, the turn ends with a clear message instead of a
+traceback.
+
 ## Setup
 
 ```bash

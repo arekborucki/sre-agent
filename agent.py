@@ -19,9 +19,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 
 from skills import skills_catalog
 from tools import TOOLS_SPEC, TOOL_IMPLS, NEEDS_APPROVAL, is_auto_safe
@@ -36,6 +43,11 @@ MAX_ITERATIONS = 20
 KEEP_RECENT_TOOL_OUTPUTS = 6
 # Cap a single model reply so one verbose answer can't blow up the context.
 MAX_RESPONSE_TOKENS = 2000
+# The HF router can return transient timeouts or 5xx (e.g. a cold model warming
+# up). Retry a few times with exponential backoff so one blip doesn't kill the
+# turn, and bound each request so it can't hang forever.
+API_TIMEOUT_SECONDS = 60
+API_MAX_RETRIES = 4
 
 SYSTEM_PROMPT = """You are an SRE debugging assistant operating in a terminal.
 
@@ -121,17 +133,43 @@ def shrink_old_outputs(messages: list) -> None:
             messages[i]["content"] = f"[older tool output elided, {len(body)} chars]"
 
 
+# Transient errors worth retrying; anything else (bad request, auth) is fatal.
+_TRANSIENT_API_ERRORS = (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError)
+
+
+def chat_with_retry(client: OpenAI, model: str, messages: list):
+    """Call the chat API, retrying transient errors with exponential backoff.
+    Raises the last error if every attempt fails."""
+    delay = 2
+    for attempt in range(1, API_MAX_RETRIES + 1):
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=TOOLS_SPEC,
+                temperature=0.0,
+                max_tokens=MAX_RESPONSE_TOKENS,
+            )
+        except _TRANSIENT_API_ERRORS as e:
+            if attempt == API_MAX_RETRIES:
+                raise
+            print(
+                f"  \033[2m(transient API error: {type(e).__name__}; "
+                f"retry {attempt}/{API_MAX_RETRIES - 1} in {delay}s)\033[0m",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            delay *= 2
+
+
 def run_turn(client: OpenAI, model: str, messages: list) -> str:
     """Drive one user turn to completion (the tool loop)."""
     for _ in range(MAX_ITERATIONS):
         shrink_old_outputs(messages)  # keep context (and cost) bounded
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=TOOLS_SPEC,
-            temperature=0.0,
-            max_tokens=MAX_RESPONSE_TOKENS,
-        )
+        try:
+            resp = chat_with_retry(client, model, messages)
+        except Exception as e:  # noqa: BLE001 — degrade gracefully, no traceback at the user
+            return f"Stopped: the model API is unavailable after retries ({type(e).__name__}: {e}). Try again shortly."
         msg = resp.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
 
@@ -158,7 +196,13 @@ def main() -> None:
     if not token:
         sys.exit("HF_TOKEN is not set. Copy .env.example to .env and fill it in.")
     model = os.getenv("MODEL_ID", "moonshotai/Kimi-K2-Instruct")
-    client = OpenAI(base_url=HF_ROUTER_BASE_URL, api_key=token)
+    # We handle retries ourselves (with backoff), so disable the SDK's own.
+    client = OpenAI(
+        base_url=HF_ROUTER_BASE_URL,
+        api_key=token,
+        timeout=API_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
 
     # Append the skills catalog (names + descriptions only) to the system prompt.
     # The model loads a skill's full body on demand via the load_skill tool.
